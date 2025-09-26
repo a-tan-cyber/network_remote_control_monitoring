@@ -16,11 +16,16 @@ require_root() {
   fi
 }
 
-# Timestamped echo for SCRIPT messages only.
+# Script messages: clean on terminal, timestamped in the log
 say() {
-  # Examples: say "[..] Updating package lists..."
   printf '\n%s\n' "$*" >&3
   printf '+ %s %s\n' "$(date '+%F %T')" "$*" >&5   # timestamped line
+}
+
+# Fail-fast helper for concise guards: cmd || die "message"
+die() {
+  say "[ERROR] $*"
+  exit 1
 }
 
 # Start logging everything (stdout/stderr) to the given file (and still show on screen).
@@ -28,8 +33,8 @@ start_logging_to() {
   local logfile="$1"
   mkdir -p /var/log
   # process substitution with tee: duplicates output to terminal and the logfile
-  exec > >(tee -a "$logfile") 2>&1            # redirection for the rest of the shell
-  exec 5>>"$logfile"
+  exec > >(tee -a "$logfile") 2>&1  # mirror stdout/stderr to terminal + log
+  exec 5>>"$logfile"                # fd5: write to log only (for timestamped say)  
 }
 
 # Stop logging (restore original stdout/stderr).
@@ -42,8 +47,7 @@ is_installed() { dpkg -s "$1" 2>/dev/null | grep -q "ok installed"; }
 
 apt_update() {
   say "[..] Updating package lists..."
-  DEBIAN_FRONTEND=noninteractive apt-get update -y || {
-    say "[ERROR] apt-get update failed"; exit 1; }
+  DEBIAN_FRONTEND=noninteractive apt-get update -y || die "apt-get update failed"
 }
 
 install_pkgs() {
@@ -54,7 +58,7 @@ install_pkgs() {
     else
       say "[..] Installing $pkg ..."
       DEBIAN_FRONTEND=noninteractive apt-get install -y "$pkg" \
-        || { say "[ERROR] Failed installing $pkg"; exit 1; }
+        || die "Failed installing $pkg"
     fi
   done
 }
@@ -66,57 +70,44 @@ setup_nipe() {
     say "[OK] nipe already present at $dir"
   else
     say "[..] Cloning nipe into $dir ..."
-    mkdir -p "$dir" || {
-      say "[ERROR] mkdir $dir failed"
-      exit 1
-    }
-    chown "$(id -u)":"$(id -g)" "$dir" || {
-      say "[ERROR] chown failed"
-      exit 1
-    }
-    git clone https://github.com/htrgouvea/nipe "$dir" || {
-      say "[ERROR] git clone failed"
-      exit 1
-    }
+    mkdir -p "$dir" || die "mkdir $dir failed"
+    chown "$(id -u)":"$(id -g)" "$dir" || die "chown failed"
+    git clone https://github.com/htrgouvea/nipe "$dir" || die "git clone failed"
   fi
 
   say "[..] Installing nipe Perl dependencies (via cpanm) ..."
-  cd "$dir" || {
-    say "[ERROR] Cannot cd to $dir"
-    exit 1
-  }
-
-  cpanm --notest --installdeps . || {
-    say "[ERROR] cpanm deps failed"
-    exit 1
-  }
+  cd "$dir" || die "Cannot cd to $dir"
+  cpanm --notest --installdeps . || die "cpanm deps failed"
 
   say "[..] Running 'perl nipe.pl install' ..."
-  perl nipe.pl install || {
-    say "[ERROR] nipe install step failed"
-    exit 1
-  }
+  perl nipe.pl install || die "nipe install step failed"
 }
 
 main() {
   require_root
 
   # ---- Phase 1: SETUP logging ----
+  say "------- Network Remote Control and Monitoring (NRCM) -------"
+  say "[START] NRCM script started at $(date '+%F %T')"
+  say "[SETUP] Starting setup phase..."
   start_logging_to "$SETUP_LOG"
   say "[..] Logging SETUP phase to $SETUP_LOG"
   apt_update
   install_pkgs
   setup_nipe
-  say "[DONE] Setup complete."
+  say "[DONE] Setup complete! Log at $SETUP_LOG"
   # Stop SETUP logging
   stop_logging
 
   # ---- Phase 2: MAIN logging (rest of your script goes here later) ----
+  say "[MAIN] Starting main phase..."
   start_logging_to "$MAIN_LOG"
   say "[..] Logging MAIN phase to $MAIN_LOG"
   # TODO: add your main commands here (port scans, whois, anonymity checks, etc.)
   say "[READY] Main phase logging initialized. Add your next steps here."
   # (Keep MAIN logging active until the script exits, or call stop_logging when you’re done.)
+  say "[DONE] Main phase complete! Log at $MAIN_LOG"
+  say "[END] NRCM script ended at $(date '+%F %T')"
 }
 
 main "$@"
