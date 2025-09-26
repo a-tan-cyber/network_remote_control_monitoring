@@ -58,20 +58,41 @@ install_pkgs() {
 
 setup_nipe() {
   local dir="/opt/nipe"
+
   if [ -d "$dir/.git" ] && [ -f "$dir/nipe.pl" ]; then
     say "[OK] nipe already present at $dir"
   else
     say "[..] Cloning nipe into $dir ..."
-    mkdir -p "$dir" || { say "[ERROR] mkdir $dir failed"; exit 1; }
-    chown "$(id -u)":"$(id -g)" "$dir" || { say "[ERROR] chown failed"; exit 1; }
-    git clone https://github.com/htrgouvea/nipe "$dir" \
-      || { say "[ERROR] git clone failed"; exit 1; }
+    mkdir -p "$dir" || {
+      say "[ERROR] mkdir $dir failed"
+      exit 1
+    }
+    chown "$(id -u)":"$(id -g)" "$dir" || {
+      say "[ERROR] chown failed"
+      exit 1
+    }
+    git clone https://github.com/htrgouvea/nipe "$dir" || {
+      say "[ERROR] git clone failed"
+      exit 1
+    }
   fi
+
   say "[..] Installing nipe Perl dependencies (via cpanm) ..."
-  cd "$dir" || { say "[ERROR] Cannot cd to $dir"; exit 1; }
-  cpanm --notest --installdeps . || { say "[ERROR] cpanm deps failed"; exit 1; }
+  cd "$dir" || {
+    say "[ERROR] Cannot cd to $dir"
+    exit 1
+  }
+
+  cpanm --notest --installdeps . || {
+    say "[ERROR] cpanm deps failed"
+    exit 1
+  }
+
   say "[..] Running 'perl nipe.pl install' ..."
-  perl nipe.pl install || { say "[ERROR] nipe install step failed"; exit 1; }
+  perl nipe.pl install || {
+    say "[ERROR] nipe install step failed"
+    exit 1
+  }
 }
 
 main() {
