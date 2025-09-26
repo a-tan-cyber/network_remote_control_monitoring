@@ -7,6 +7,17 @@ require_root() {
   fi
 }
 
+# --- project logging (added) ---
+init_logging() {
+  LOGFILE="/var/log/nrcm_setup.log"
+  echo "[..] Logging to $LOGFILE"
+  # Ensure the log directory exists (it should on Debian/Ubuntu/Kali, but keep it explicit)
+  mkdir -p /var/log
+  # Send stdout and stderr to both the terminal and the logfile
+  # (tee appends with -a; we use process substitution so 'exec' redirects the whole script)
+  exec > >(tee -a "$LOGFILE") 2>&1
+}
+
 is_installed() { dpkg -s "$1" 2>/dev/null | grep -q "ok installed"; }
 
 apt_update() {
@@ -48,13 +59,13 @@ setup_nipe() {
 
 main() {
   require_root
+  init_logging           # <-- added
   apt_update
   install_pkgs
   setup_nipe
   echo "[DONE] Tools installed and nipe is set up."
 }
 
-# Run only if executed directly (not when sourced)
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   main "$@"
 fi
