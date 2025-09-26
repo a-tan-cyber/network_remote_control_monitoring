@@ -19,7 +19,8 @@ require_root() {
 # Timestamped echo for SCRIPT messages only.
 say() {
   # Examples: say "[..] Updating package lists..."
-  printf '+ %s %s\n' "$(date '+%F %T')" "$*"   # timestamped line
+  printf '\n%s\n' "$*" >&3
+  printf '+ %s %s\n' "$(date '+%F %T')" "$*" >&5   # timestamped line
 }
 
 # Start logging everything (stdout/stderr) to the given file (and still show on screen).
@@ -28,11 +29,13 @@ start_logging_to() {
   mkdir -p /var/log
   # process substitution with tee: duplicates output to terminal and the logfile
   exec > >(tee -a "$logfile") 2>&1            # redirection for the rest of the shell
+  exec 5>>"$logfile"
 }
 
 # Stop logging (restore original stdout/stderr).
 stop_logging() {
   exec 1>&3 2>&4
+  exec 5>&-
 }
 
 is_installed() { dpkg -s "$1" 2>/dev/null | grep -q "ok installed"; }
