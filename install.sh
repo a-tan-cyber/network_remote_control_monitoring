@@ -119,7 +119,4 @@ main() {
   # (Keep MAIN logging active until the script exits, or call stop_logging when you’re done.)
 }
 
-# Run only if executed directly (not when sourced)
-if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
-  main "$@"
-fi
+main "$@"
