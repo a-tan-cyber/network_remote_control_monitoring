@@ -3,7 +3,9 @@
 # Default remote server details (change as needed)
 REMOTE_IP="192.168.114.130" 
 REMOTE_USER="tc"        
-REMOTE_PASS="tc"        
+REMOTE_PASS="tc"
+REMOTE_SSH_PORT=22 # default SSH port; will be updated if nmap finds a different one
+REMOTE_FTP_PORT=21 # default FTP port; will be updated if nmap finds a different one         
 
 # Default whois target (if none provided interactively or via command line)
 WHOIS_TARGET="example.com" # change as needed
@@ -84,6 +86,16 @@ start_logging_silent_to() {
 stop_logging() {
   exec 1>&3 2>&4 # restore original stdout (FD 1) and stderr (FD 2) from backups (FD 3 and FD 4)
   exec 5>&- # close FD 5 (log-only output) to avoid leaks
+}
+
+log_whois() {
+  local target="$1"
+  say "[..] Running whois lookup for: $target"
+  if whois "$target" >> "$WHOIS_LOG" 2>&1; then
+    say "[OK] whois lookup completed. Output saved to: $WHOIS_LOG"
+  else
+    say "[WARN] whois lookup failed for $target. Check network or target validity."
+  fi
 }
 
 # say: Print a message to the log (with timestamp) and to the terminal (without timestamp).
@@ -188,8 +200,8 @@ setup_nipe() {
 
 # get_public_ip: Get current public IP address (used for anonymity check)
 get_public_ip() {
-  # curl: simple HTTP client; https://ifconfig.co returns your public IP in plain text; -s: silent mode (no extra output)
-  curl -s https://ifconfig.co
+  # Uses a plain-text IP service; -s: silent mode to avoid output, --max-time 8: timeout after 8 seconds to avoid hanging
+  curl -s --max-time 8 https://api.ipify.org
 }
 
 # get_country_for_ip: Get country name for a given IP address
@@ -198,7 +210,7 @@ get_country_for_ip() {
   geoiplookup "$ip" | awk -F ': ' '{print $2}' # parse output to get country ISO code, name
 }
 
-start_nipe() {
+start_nipe_with_retry() {
   local tries=5
   local nipe_status
 
@@ -207,7 +219,7 @@ start_nipe() {
   for (( i=1; i<=tries; i++ )); do
     nipe_status="$( cd "$NIPE_DIR" && perl nipe.pl restart 2>&1 && perl nipe.pl status )"
     if echo "$nipe_status" | grep -qi "Status: true"; then
-      say "[OK] nipe status: true (Tor is running!)"
+      say "[OK] nipe started successfully!"
       return 0
     else
       say "[WARN] nipe start attempt $i/$tries failed; Tor may still be bootstrapping."
@@ -234,38 +246,39 @@ check_anonymity() {
   if [ -z "$before_ip" ]; then
     die "Could not fetch your public IP before enabling nipe (network issue?)"
   fi
-  say "[INFO] Your current (direct) public IP: $before_ip"
+  say "[..] Your current (direct) public IP: $before_ip"
 
   before_country="$(get_country_for_ip "$before_ip")"
   if [ -n "$before_country" ]; then
-    say "[INFO] Your current (direct) location: $before_country"
+    say "[..] Your current (direct) location: $before_country"
   else
-    die "Could not fetch country for $before_ip. Unable to proceed with anonymity check."
+    say "[WARN] Could not fetch country for $before_ip; anonymity check may be less clear."
   fi
 
   # 2) Start nipe with a simple retry loop (safe to call anytime)
-  start_nipe
+  start_nipe_with_retry
 
   # 4) Fetch Tor exit IP and compare
   after_ip="$(get_public_ip)"
   if [ -z "$after_ip" ]; then
     die "Could not fetch public IP after enabling nipe. Network/Tor may be down."
   fi
-  say "[INFO] Your (Tor) exit IP: $after_ip"
+  say "[..] Your (Tor) exit IP: $after_ip"
 
   if [ "$before_ip" = "$after_ip" ]; then
-    die "Exit IP did not change (still $after_ip). Unable to proceed anonymously."
+    die "Cannot proceed anonymously: exit IP did not change after enabling nipe."
   fi
 
   # 5) Show spoofed country (success path)
   after_country="$(get_country_for_ip "$after_ip")"
   if [ -z "$after_country" ]; then
-    die "Could not fetch country for IP $after_ip. Unable to proceed with anonymity check."
+    say "[WARN] Could not fetch country for IP $after_ip; spoofed location unknown."
   else
     if [ "$before_country" = "$after_country" ] && [ -n "$before_country" ]; then
-      die "Exit IP is in the same country as before ($after_country). Unable to confirm anonymity."
+      say "[INFO] Exit IP is in the same country as before ($after_country)."
+      say "[INFO] This can happen and does not mean Tor is off; your IP still changed."
     else
-      say "[INFO] Your (Tor) exit location: $after_country"
+      say "[..] Your (Tor) exit location: $after_country"
     fi
   fi
 
@@ -300,25 +313,26 @@ get_whois_target() {
   fi
 }
 
-# run_nmap: Scan the remote server for open ports and save output
-run_nmap() {
+# run_nmap_scan: Scan the remote server for open ports and save output
+run_nmap_scan() {
   mkdir -p "$RESULTS_DIR"
   say "[..] Running nmap scan on remote server (this may take a while)..."
   # -Pn: don't ping first; -sS: TCP SYN scan; -sV: try to detect service/version; --version-light: faster version detection
   # -T4: speeds it up a little; -n: don't do DNS lookups; -p-: scan all TCP ports
   # --open: only show open ports; -oN: normal output to file
   if nmap -Pn -sS -sV --version-light -T4 -n -p- --open -oN "$NMAP_OUT" "$REMOTE_IP" >/dev/null 2>&1; then
-    say "[OK] nmap scan completed. Output saved to: $NMAP_OUT" 
-    # Try to discover SSH and FTP ports from the saved output
-    get_ports
+    say "[OK] nmap scan completed. Output saved to: $NMAP_OUT"
   else
-    say "[WARN] nmap scan failed. Will try default ports (SSH:$REMOTE_SSH_PORT, FTP:$REMOTE_FTP_PORT)."
+    say "[WARN] nmap scan failed. Will use default ports (SSH:$REMOTE_SSH_PORT, FTP:$REMOTE_FTP_PORT)."
     return 1
   fi
+
+  # Try to discover SSH and FTP ports from the saved output
+  parse_ports_from_nmap
 }
 
-# get_ports: Read the nmap file and set SSH/FTP ports if found
-get_ports() {
+# parse_ports_from_nmap: Read the nmap file and set SSH/FTP ports if found
+parse_ports_from_nmap() {
   local found_ssh found_ftp
 
   # Example nmap line looks like: "22/tcp open  ssh"
@@ -330,84 +344,15 @@ get_ports() {
     REMOTE_SSH_PORT="$found_ssh"
     say "[OK] Discovered SSH port: $REMOTE_SSH_PORT"
   else
-    REMOTE_SSH_PORT=22
-    say "[INFO] SSH port not found in nmap output. Will try default: $REMOTE_SSH_PORT"
+    say "[INFO] SSH port not found in nmap output. Will use default: $REMOTE_SSH_PORT"
   fi
 
   if [ -n "$found_ftp" ]; then
     REMOTE_FTP_PORT="$found_ftp"
     say "[OK] Discovered FTP port: $REMOTE_FTP_PORT"
   else
-    REMOTE_FTP_PORT=21
-    say "[INFO] FTP port not found in nmap output. Will try default: $REMOTE_FTP_PORT"
+    say "[INFO] FTP port not found in nmap output. Will use default: $REMOTE_FTP_PORT"
   fi
-}
-
-remote_cmds() {
-  # single SSH-session command
-  cat <<'EOF'
-ip="$(curl -s https://ifconfig.co 2>/dev/null)";      echo "$ip"
-country="$(geoiplookup "$ip" 2>/dev/null | awk -F ": " "{print \$2}")"; echo "$country"
-up="$(uptime 2>/dev/null)";                           echo "$up"
-EOF
-}
-
-# Runs SSH once with the given port.
-# Sets two globals: SSH_RC (exit code) and SSH_OUT (captured output)
-run_ssh() {
-  local opts="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
-
-  SSH_OUT="$(sshpass -p "$REMOTE_PASS" ssh -p "$REMOTE_SSH_PORT" $opts "$REMOTE_USER@$REMOTE_IP" "$(remote_cmds)" 2>/dev/null)"
-  SSH_RC=$?
-}
-
-print_ssh_output() {
-  local ip country up
-  
-  ip="$(printf "%s" "$SSH_OUT" | sed -n '1p')"
-  country="$(printf "%s" "$SSH_OUT" | sed -n '2p')"
-  up="$(printf "%s" "$SSH_OUT" | sed -n '3p')"
-
-  if [ -n "$ip" ]; then
-    say "[OK] Remote public IP: $ip"
-  else
-    say "[ERROR] Failed to get remote IP (curl)."
-  fi
-
-  if [ -n "$country" ]; then
-    say "[OK] Remote location: $country"
-  else
-    say "[ERROR] Failed to get remote country (geoiplookup)."
-  fi
-
-  if [ -n "$up" ]; then
-    say "[OK] Remote uptime: $up"
-  else
-    say "[ERROR] Failed to get remote uptime."
-  fi
-}
-
-# --- main wrapper ---
-
-ssh_connection() {
-  say "[..] Connecting to remote server via SSH on port $REMOTE_SSH_PORT ..."
-  run_ssh
-
-  # If SSH failed on discovered port and it's not 22, try default 22 once.
-  if [ $SSH_RC -ne 0 ] && [ "$REMOTE_SSH_PORT" != "22" ]; then
-    say "[WARN] SSH failed on discovered port $REMOTE_SSH_PORT. Trying default port 22 ..."
-    REMOTE_SSH_PORT=22
-    run_ssh
-  fi
-
-  if [ $SSH_RC -ne 0 ]; then
-    die "Could not establish SSH connection (port $REMOTE_SSH_PORT)."
-  fi
-
-  say "[OK] SSH connection OK on port $REMOTE_SSH_PORT"
-
-  # The remote command prints exactly 3 lines: IP, Country, Uptime (may be empty)
-  print_ssh_output
 }
 
 # ---------- MAIN SCRIPT ----------
@@ -443,8 +388,7 @@ main() {
   say "[..] Logging MAIN phase to: $MAIN_LOG"
   check_anonymity
   get_whois_target "$1"
-  run_nmap
-  ssh_connection
+  run_nmap_scan
   say "[DONE] Main phase complete! Log: $MAIN_LOG"
   say "[END] NRCM script ended on $(date --rfc-3339=seconds). Logs at: $LOG_DIR"
   stop_logging
