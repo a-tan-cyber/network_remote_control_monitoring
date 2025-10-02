@@ -534,7 +534,7 @@ SFTP_RC=$?
 
 # get_via_sftp: Download the whois file via SFTP (secure) from the remote server
 get_via_sftp() {
-  say "[..] Downloading whois file via SFTP (secure) from remote server port $REMOTE_FTP_PORT"
+  say "[..] Downloading whois file via SFTP (secure) from remote server port $REMOTE_SSH_PORT"
   run_sftp
 
   # If SFTP failed on discovered port and it's not 22, try default 22 once.
